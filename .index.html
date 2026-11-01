@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Private 2-Person Chat & Call</title>
+    
+    <!-- CSS Styling -->
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 10px;
+            background-color: #121212;
+            color: #ffffff;
+        }
+        #app {
+            max-width: 500px;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            height: 95vh;
+        }
+        .video-container {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        video {
+            width: 50%;
+            height: 140px;
+            background-color: #000;
+            border-radius: 8px;
+            object-fit: cover;
+        }
+        #chatBox {
+            flex-grow: 1;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 10px;
+            overflow-y: auto;
+            background-color: #1e1e1e;
+            margin-bottom: 10px;
+            display: flex;
+            flex-direction: column;
+        }
+        .message {
+            margin-bottom: 8px;
+            padding: 6px 10px;
+            border-radius: 6px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        .sent {
+            background-color: #007bff;
+            align-self: flex-end;
+        }
+        .received {
+            background-color: #333;
+            align-self: flex-start;
+        }
+        .chat-img {
+            max-width: 100%;
+            border-radius: 5px;
+        }
+        .input-area, .controls {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        input[type="text"] {
+            flex-grow: 1;
+            padding: 10px;
+            border-radius: 4px;
+            border: none;
+        }
+        button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            background-color: #28a745;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #555;
+            cursor: not-allowed;
+        }
+        #status {
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app">
+        <h2>Private Chat & Calling App</h2>
+        <div id="status">Status: Connecting...</div>
+
+        <!-- Video Area -->
+        <div class="video-container">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <video id="remoteVideo" autoplay playsinline></video>
+        </div>
+
+        <!-- Calling and File Controls -->
+        <div class="controls">
+            <button id="startCallBtn">Start Call</button>
+            <button id="endCallBtn" disabled>End Call</button>
+        </div>
+        <div class="controls">
+            <input type="file" id="imageInput" accept="image/*">
+        </div>
+
+        <!-- Messaging Area -->
+        <div id="chatBox"></div>
+        <div class="input-area">
+            <input type="text" id="messageInput" placeholder="Type a message...">
+            <button id="sendBtn">Send</button>
+        </div>
+    </div>
+
+    <!-- JavaScript Code -->
+    <script>
+        const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        const socket = new WebSocket(protocol + window.location.host);
+
+        let localStream;
+        let peerConnection;
+        let dataChannel;
+
+        const configuration = {
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        };
+
+        const statusDiv = document.getElementById('status');
+        const chatBox = document.getElementById('chatBox');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const startCallBtn = document.getElementById('startCallBtn');
+        const endCallBtn = document.getElementById('endCallBtn');
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const imageInput = document.getElementById('imageInput');
+
+        socket.onopen = () => {
+            statusDiv.textContent = 'Status: Connected to Server';
+            setupPeerConnection();
+        };
+
+        socket.onmessage = async (event) => {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'error') {
+                alert(data.message);
+                return;
+            }
+
+            if (data.offer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                socket.send(JSON.stringify({ answer }));
+            } else if (data.answer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+            } else if (data.candidate) {
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                } catch (e) {
+                    console.error('ICE Candidate Error:', e);
+                }
+            }
+        };
+
+        function setupPeerConnection() {
+            peerConnection = new RTCPeerConnection(configuration);
+
+            dataChannel = peerConnection.createDataChannel('chatChannel');
+            setupDataChannel(dataChannel);
+
+            peerConnection.ondatachannel = (event) => {
+                setupDataChannel(event.channel);
+            };
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.send(JSON.stringify({ candidate: event.candidate }));
+                }
+            };
+
+            peerConnection.ontrack = (event) => {
+                remoteVideo.srcObject = event.streams[0];
+            };
+        }
+
+        function setupDataChannel(channel) {
+            dataChannel = channel;
+            dataChannel.onopen = () => {
+                statusDiv.textContent = 'Status: Direct P2P Connection Established';
+            };
+            dataChannel.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'text') {
+                    appendMessage(data.content, 'received');
+                } else if (data.type === 'image') {
+                    appendImage(data.content, 'received');
+                }
+            };
+        }
+
+        sendBtn.onclick = () => {
+            const text = messageInput.value.trim();
+            if (text && dataChannel && dataChannel.readyState === 'open') {
+                dataChannel.send(JSON.stringify({ type: 'text', content: text }));
+                appendMessage(text, 'sent');
+                messageInput.value = '';
+            }
+        };
+
+        imageInput.onchange = (e) => {
+            const file = e.target.files[0];
+            if (file && dataChannel && dataChannel.readyState === 'open') {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const base64Data = event.target.result;
+                    dataChannel.send(JSON.stringify({ type: 'image', content: base64Data }));
+                    appendImage(base64Data, 'sent');
+                };
+                reader.readAsDataURL(file);
+            }
+        };
+
+        startCallBtn.onclick = async () => {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+
+                localStream.getTracks().forEach((track) => {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                socket.send(JSON.stringify({ offer }));
+
+                startCallBtn.disabled = true;
+                endCallBtn.disabled = false;
+            } catch (err) {
+                alert('Camera/Microphone permission denied.');
+            }
+        };
+
+        endCallBtn.onclick = () => {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+            }
+            localVideo.srcObject = null;
+            remoteVideo.srcObject = null;
+            startCallBtn.disabled = false;
+            endCallBtn.disabled = true;
+        };
+
+        function appendMessage(text, side) {
+            const div = document.createElement('div');
+            div.className = `message ${side}`;
+            div.textContent = text;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function appendImage(src, side) {
+            const div = document.createElement('div');
+            div.className = `message ${side}`;
+            const img = document.createElement('img');
+            img.src = src;
+            img.className = 'chat-img';
+            div.appendChild(img);
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+    </script>
+</body>
+  </html>
